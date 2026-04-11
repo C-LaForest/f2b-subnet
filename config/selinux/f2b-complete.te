@@ -1,0 +1,17 @@
+module f2b-complete 1.0;
+
+require {
+        type admin_home_t;
+        type fail2ban_t;
+        type fail2ban_client_exec_t;
+        type http_port_t;
+        class process execmem;
+        class tcp_socket name_connect;
+        class file { execute execute_no_trans getattr ioctl open read write };
+}
+
+#============= fail2ban_t ==============
+allow fail2ban_t admin_home_t:file { getattr ioctl open read write };
+allow fail2ban_t fail2ban_client_exec_t:file { execute execute_no_trans getattr ioctl open read };
+allow fail2ban_t http_port_t:tcp_socket name_connect;
+allow fail2ban_t self:process execmem;

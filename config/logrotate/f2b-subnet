@@ -1,0 +1,11 @@
+/var/log/f2b_subnet_ban.log
+/var/log/f2b_backup.log
+{
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+}
