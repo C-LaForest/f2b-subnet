@@ -30,6 +30,7 @@ A cron job runs every 10 minutes to:
 | `get_f2b_stats.sh` | `$F2B_DIR/` | Quick status check |
 | `find_outOfSync.sh` | `$F2B_DIR/` | Diff f2b vs nft |
 | `backup_f2b_dovecot.sh` | `$F2B_DIR/` | Daily backup (both jails) |
+| `dedup_subnets.sh` | `$F2B_DIR/` | Remove subnets covered by broader bans |
 | `check-f2b-nft-sync.sh` | `/usr/local/bin/` | Nagios monitoring check |
 
 ### Configuration (`config/`)

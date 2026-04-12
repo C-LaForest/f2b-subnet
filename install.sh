@@ -28,6 +28,7 @@ deploy scripts/whois_cache_loop.sh    "${F2B_DIR}/whois_cache_loop.sh"
 deploy scripts/get_f2b_stats.sh       "${F2B_DIR}/get_f2b_stats.sh"
 deploy scripts/find_outOfSync.sh      "${F2B_DIR}/find_outOfSync.sh"
 deploy scripts/backup_f2b_dovecot.sh  "${F2B_DIR}/backup_f2b_dovecot.sh"
+deploy scripts/dedup_subnets.sh       "${F2B_DIR}/dedup_subnets.sh"
 
 # Config
 deploy config/fail2ban/dovecot-subnet.conf /etc/fail2ban/filter.d/dovecot-subnet.conf 0644

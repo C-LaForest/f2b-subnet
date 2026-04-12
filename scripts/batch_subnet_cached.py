@@ -123,14 +123,27 @@ def lookup_subnet(ip):
     print("[whois fallback]", end=" ", flush=True)
     return whois_lookup(ip)
 
+def is_covered_by_broader(subnet_str):
+    """Check if subnet is already covered by a broader existing ban"""
+    net = ipaddress.IPv4Network(subnet_str)
+    for existing in subnet_nets:
+        if net != existing and net.subnet_of(existing):
+            return existing
+    return None
+
 def ban_subnet(subnet):
     """Call f2b_subnet_ban.sh and track the subnet"""
+    broader = is_covered_by_broader(subnet)
+    if broader:
+        print(f"  Skipping {subnet} (covered by existing {broader})")
+        return
     cmd = [SCRIPT]
     if DRY_RUN:
         cmd.append("--dry-run")
     cmd.append(subnet)
     subprocess.run(cmd)
     existing_nets.add(subnet)
+    subnet_nets.append(ipaddress.IPv4Network(subnet))
 
 def process_leftovers(leftover_ips, prefix, label):
     """Process leftover IPs, caching discovered subnets to avoid repeat lookups"""

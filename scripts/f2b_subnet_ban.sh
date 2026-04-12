@@ -206,6 +206,28 @@ if [[ "$PREFIX" -eq 32 ]]; then
     exit 0
 fi
 
+# Skip if already covered by a broader existing subnet ban
+BROADER=$(/usr/sbin/nft list set inet f2b-table addr-set-dovecot-subnet 2>/dev/null | \
+    grep -oP '(\d{1,3}\.){3}\d{1,3}/\d{1,2}' | \
+    LOOKUP_SUBNET="$SUBNET" python3 -c '
+import ipaddress, sys, os
+new = ipaddress.IPv4Network(os.environ["LOOKUP_SUBNET"])
+for line in sys.stdin:
+    existing = ipaddress.IPv4Network(line.strip())
+    if new != existing and new.subnet_of(existing):
+        print(existing)
+        break
+' 2>/dev/null)
+if [[ -n "$BROADER" ]]; then
+    log_msg "SKIP - $SUBNET already covered by broader $BROADER (source: ${IP:-manual})"
+    # Still unban the individual IP if present
+    if [[ -n "$IP" ]]; then
+        /usr/bin/fail2ban-client set "$IP_JAIL" unbanip "$IP" >/dev/null 2>&1
+        log_msg "  Unbanned $IP from $IP_JAIL (covered by $BROADER)"
+    fi
+    exit 0
+fi
+
 log_msg "Banning $SUBNET (source: ${IP:-manual})"
 
 # Unban covered entries from BOTH jails (individual IPs from dovecot, narrower subnets from dovecot-subnet)
