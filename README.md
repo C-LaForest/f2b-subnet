@@ -62,6 +62,9 @@ A cron job runs every 10 minutes to:
 | `F2B_CACHE_TTL_SUCCESS` | `2592000` (30 days) | `batch_subnet_cached.py` | Seconds before successful cache entries are eligible for revalidation (with `--revalidate`) |
 | `F2B_CACHE_TTL_FAILURE` | `86400` (24 hours) | `batch_subnet_cached.py` | Seconds before failed lookups are retried |
 | `F2B_LOOKUP_TIMEOUT` | `15` | `batch_subnet_cached.py` | Hard timeout (seconds) per RDAP+whois lookup |
+| `F2B_REVALIDATE_MAX` | `200` | `batch_subnet_cached.py` | Max cache entries to re-lookup per `--revalidate` run |
+| `F2B_REVALIDATE_DELAY_MIN` | `1` | `batch_subnet_cached.py` | Min seconds between revalidation lookups (jitter floor) |
+| `F2B_REVALIDATE_DELAY_MAX` | `5` | `batch_subnet_cached.py` | Max seconds between revalidation lookups (jitter ceiling) |
 | `F2B_FROM` | `fail2ban@$(hostname -f)` | `f2b_subnet_ban.sh` | Sender address for subnet ban notification emails |
 
 ```bash

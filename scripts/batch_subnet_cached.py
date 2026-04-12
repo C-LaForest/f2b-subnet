@@ -3,6 +3,7 @@
 
 import bisect
 import ipaddress
+import random
 import signal
 import subprocess
 import sys
@@ -29,9 +30,17 @@ LIST_UNCOVERED = "--list-uncovered" in sys.argv
 CACHE_TTL_SUCCESS = int(os.environ.get("F2B_CACHE_TTL_SUCCESS", 30 * 86400))  # 30 days
 CACHE_TTL_FAILURE = int(os.environ.get("F2B_CACHE_TTL_FAILURE", 24 * 3600))   # 24 hours
 LOOKUP_TIMEOUT = int(os.environ.get("F2B_LOOKUP_TIMEOUT", 15))                # seconds per IP
+REVALIDATE_MAX = int(os.environ.get("F2B_REVALIDATE_MAX", 200))              # max entries per revalidation run
+REVALIDATE_DELAY_MIN = float(os.environ.get("F2B_REVALIDATE_DELAY_MIN", 1))  # min seconds between revalidation lookups
+REVALIDATE_DELAY_MAX = float(os.environ.get("F2B_REVALIDATE_DELAY_MAX", 5))  # max seconds between revalidation lookups
 
 class LookupTimeout(Exception):
     pass
+
+class RateLimited(Exception):
+    pass
+
+_rate_limited = False
 
 def _timeout_handler(signum, frame):
     raise LookupTimeout()
@@ -122,6 +131,9 @@ def rdap_lookup(ip):
         f"https://rdap.lacnic.net/rdap/ip/{ip}",
         f"https://rdap.afrinic.net/rdap/ip/{ip}",
     ]
+    if REVALIDATE:
+        urls = urls[:]  # copy before shuffling
+        random.shuffle(urls)
     for url in urls:
         try:
             req = urllib.request.Request(url, headers={'Accept': 'application/rdap+json'})
@@ -132,7 +144,7 @@ def rdap_lookup(ip):
                 if data.get('errorCode') in (429, 503):
                     print("[RATE-LIMITED]", end=" ", flush=True)
                     socket.getaddrinfo = origgetaddrinfo
-                    return None
+                    raise RateLimited()
 
                 if 'cidr0_cidrs' in data:
                     for cidr in data['cidr0_cidrs']:
@@ -156,7 +168,7 @@ def rdap_lookup(ip):
             if e.code == 429:
                 print("[RATE-LIMITED]", end=" ", flush=True)
                 socket.getaddrinfo = origgetaddrinfo
-                return None
+                raise RateLimited()
             continue
         except (urllib.error.URLError, json.JSONDecodeError, KeyError, OSError):
             continue
@@ -208,6 +220,7 @@ def whois_lookup(ip):
 
 def lookup_subnet(ip):
     """RDAP first, whois fallback. Hard timeout via SIGALRM."""
+    global _rate_limited
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(LOOKUP_TIMEOUT)
     try:
@@ -219,6 +232,9 @@ def lookup_subnet(ip):
         return whois_lookup(ip)
     except LookupTimeout:
         print("[TIMEOUT]", end=" ", flush=True)
+        return None
+    except RateLimited:
+        _rate_limited = True
         return None
     finally:
         signal.alarm(0)
@@ -484,7 +500,8 @@ print(f"Individual IPs: {len(individual_ips)}")
 print(f"Existing subnets: {len(existing_subnets)}")
 
 if REVALIDATE:
-    print(f"Revalidation mode: entries older than {CACHE_TTL_SUCCESS // 86400}d will be re-looked up")
+    print(f"Revalidation mode: entries older than {CACHE_TTL_SUCCESS // 86400}d will be re-looked up"
+          f" (max {REVALIDATE_MAX}, delay {REVALIDATE_DELAY_MIN}-{REVALIDATE_DELAY_MAX}s)")
 
 # Build set of existing subnet networks for fast lookup
 existing_nets = set(existing_subnets)
@@ -499,6 +516,59 @@ subnet_starts = [r[0] for r in subnet_ranges]
 def is_covered(ip_int):
     idx = bisect.bisect_right(subnet_starts, ip_int) - 1
     return idx >= 0 and ip_int <= subnet_ranges[idx][1]
+
+# Revalidation pass: re-lookup stale cache entries
+if REVALIDATE:
+    stale = [(k, v) for k, v in cache.items()
+             if isinstance(v, dict)
+             and v.get("subnet") is not None
+             and not str(v.get("subnet", "")).startswith("TOO_BROAD:")
+             and (NOW - v.get("ts", 0)) >= CACHE_TTL_SUCCESS]
+    random.shuffle(stale)  # randomize order to spread across RIRs over multiple runs
+    stale = stale[:REVALIDATE_MAX]
+
+    if stale:
+        print(f"\nRevalidating {len(stale)} stale cache entries...")
+        revalidated = 0
+        reval_failed = 0
+        for key, entry in stale:
+            if _rate_limited:
+                print(f"Rate limited — stopping revalidation ({revalidated} done, "
+                      f"{len(stale) - revalidated - reval_failed} deferred)")
+                break
+
+            old_subnet = entry["subnet"]
+            # Extract a sample IP to look up — use first IP in the subnet
+            try:
+                sample_ip = str(next(ipaddress.IPv4Network(old_subnet).hosts()))
+            except (StopIteration, ValueError):
+                continue
+
+            print(f"[REVAL] {key} (was {old_subnet})...", end=" ", flush=True)
+            new_subnet = lookup_subnet(sample_ip)
+
+            if _rate_limited:
+                print("rate limited, deferring rest")
+                break
+            elif new_subnet:
+                cache_set(key, new_subnet)
+                if new_subnet != old_subnet:
+                    print(f"→ {new_subnet} (CHANGED from {old_subnet})")
+                else:
+                    print(f"→ {new_subnet} (confirmed)")
+                revalidated += 1
+            else:
+                print("FAILED (keeping old entry)")
+                # Don't overwrite good data with a failure — just bump the timestamp
+                # so we don't retry this one next run
+                entry["ts"] = NOW
+                reval_failed += 1
+
+            delay = random.uniform(REVALIDATE_DELAY_MIN, REVALIDATE_DELAY_MAX)
+            time.sleep(delay)
+
+        save_cache()
+        print(f"Revalidation: {revalidated} updated, {reval_failed} failed\n")
 
 # Skip IPs already covered by existing subnets (no need to look them up again)
 uncovered = []
@@ -530,6 +600,10 @@ skipped = 0
 failed = 0
 
 for prefix, ips in sorted(groups.items(), key=lambda x: -len(x[1])):
+    if _rate_limited:
+        print("Rate limited — stopping batch processing")
+        break
+
     # Check cache first
     cached_val, expired = cache_get(prefix)
     if prefix in cache and not expired:
