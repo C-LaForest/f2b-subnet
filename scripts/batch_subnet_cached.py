@@ -20,6 +20,10 @@ SCRIPT = "/usr/local/bin/f2b_subnet_ban.sh"
 
 DRY_RUN = "--dry-run" in sys.argv
 REVALIDATE = "--revalidate" in sys.argv
+INJECT = "--inject" in sys.argv
+INJECT_CIDR = "--inject-cidr" in sys.argv
+INJECT_RANGE = "--inject-range" in sys.argv
+LIST_UNCOVERED = "--list-uncovered" in sys.argv
 
 # Cache TTLs (seconds) — configurable via environment
 CACHE_TTL_SUCCESS = int(os.environ.get("F2B_CACHE_TTL_SUCCESS", 30 * 86400))  # 30 days
@@ -316,6 +320,145 @@ def process_leftovers(leftover_ips, prefix, label):
             save_cache()
             failed += 1
             time.sleep(3)
+
+
+# --- Inject modes ---
+
+def inject_for_cidrs(cidrs):
+    """Update cache and ban for a list of CIDRs. Clears failed entries for covered IPs."""
+    # Get current uncovered IPs to update their cache entries
+    result = subprocess.run(['/usr/bin/fail2ban-client', 'get', JAIL, 'banip'],
+                            capture_output=True, text=True)
+    all_ips = [e for e in result.stdout.split() if '/' not in e and e]
+
+    nets = [ipaddress.IPv4Network(c) for c in cidrs]
+    updated = 0
+
+    for ip in all_ips:
+        ip_obj = ipaddress.IPv4Address(ip)
+        for net in nets:
+            if ip_obj in net:
+                parts = ip.split('.')
+                prefix = f"{parts[0]}.{parts[1]}"
+                lp = f"{prefix}:{ip}"
+                # Clear failed per-IP cache entry if it exists
+                if lp in cache:
+                    old = cache[lp].get("subnet") if isinstance(cache[lp], dict) else cache[lp]
+                    if old is None:
+                        cache_set(lp, str(net))
+                        updated += 1
+                break
+
+    # Update group-level cache entries too
+    for net in nets:
+        parts = str(net.network_address).split('.')
+        prefix = f"{parts[0]}.{parts[1]}"
+        # Only set group cache if not already set to a valid subnet
+        cached_val, _ = cache_get(prefix)
+        if cached_val is None or prefix not in cache:
+            cache_set(prefix, str(net))
+            print(f"Cache: {prefix} → {net}")
+
+    save_cache()
+    print(f"Updated {updated} per-IP cache entries")
+
+    # Ban each CIDR
+    for cidr in cidrs:
+        cmd = [SCRIPT]
+        if DRY_RUN:
+            cmd.append("--dry-run")
+        cmd.append(cidr)
+        print(f"Banning {cidr}...")
+        subprocess.run(cmd)
+
+def do_inject():
+    """--inject <ip> <cidr> — map an IP to its subnet, update cache, ban."""
+    args = [a for a in sys.argv[1:] if a not in ("--inject", "--dry-run")]
+    if len(args) != 2:
+        print("Usage: batch_subnet_cached.py --inject <ip> <cidr> [--dry-run]", file=sys.stderr)
+        sys.exit(1)
+    ip, cidr = args[0], args[1]
+    try:
+        ip_obj = ipaddress.IPv4Address(ip)
+        net = ipaddress.IPv4Network(cidr)
+    except ValueError as e:
+        print(f"Invalid input: {e}", file=sys.stderr)
+        sys.exit(1)
+    if ip_obj not in net:
+        print(f"Warning: {ip} is not within {cidr} — proceeding anyway")
+    inject_for_cidrs([cidr])
+
+def do_inject_cidr():
+    """--inject-cidr <cidr> [<cidr>...] — ban CIDRs and update cache."""
+    args = [a for a in sys.argv[1:] if a not in ("--inject-cidr", "--dry-run")]
+    if not args:
+        print("Usage: batch_subnet_cached.py --inject-cidr <cidr> [<cidr>...] [--dry-run]", file=sys.stderr)
+        sys.exit(1)
+    cidrs = []
+    for arg in args:
+        try:
+            ipaddress.IPv4Network(arg)
+            cidrs.append(arg)
+        except ValueError as e:
+            print(f"Invalid CIDR '{arg}': {e}", file=sys.stderr)
+            sys.exit(1)
+    inject_for_cidrs(cidrs)
+
+def do_inject_range():
+    """--inject-range <start_ip> <end_ip> — convert range to CIDRs, ban, update cache."""
+    args = [a for a in sys.argv[1:] if a not in ("--inject-range", "--dry-run")]
+    if len(args) != 2:
+        print("Usage: batch_subnet_cached.py --inject-range <start_ip> <end_ip> [--dry-run]", file=sys.stderr)
+        sys.exit(1)
+    try:
+        start = ipaddress.IPv4Address(args[0])
+        end = ipaddress.IPv4Address(args[1])
+    except ValueError as e:
+        print(f"Invalid IP: {e}", file=sys.stderr)
+        sys.exit(1)
+    cidrs = [str(net) for net in ipaddress.summarize_address_range(start, end)]
+    print(f"Range {start} - {end} → {', '.join(cidrs)}")
+    inject_for_cidrs(cidrs)
+
+def do_list_uncovered():
+    """--list-uncovered — show IPs not covered by any subnet ban."""
+    result = subprocess.run(['/usr/bin/fail2ban-client', 'get', JAIL, 'banip'],
+                            capture_output=True, text=True)
+    ips = [e for e in result.stdout.split() if '/' not in e and e]
+
+    result = subprocess.run(['/usr/bin/fail2ban-client', 'get', SUBNET_JAIL, 'banip'],
+                            capture_output=True, text=True)
+    subnets = [ipaddress.IPv4Network(e) for e in result.stdout.split() if '/' in e and e]
+
+    ranges = sorted(
+        (int(n.network_address), int(n.broadcast_address)) for n in subnets
+    )
+    starts = [r[0] for r in ranges]
+
+    uncovered = []
+    for ip in ips:
+        ip_int = int(ipaddress.IPv4Address(ip))
+        idx = bisect.bisect_right(starts, ip_int) - 1
+        if idx < 0 or ip_int > ranges[idx][1]:
+            uncovered.append(ip)
+
+    for ip in sorted(uncovered, key=lambda x: int(ipaddress.IPv4Address(x))):
+        print(ip)
+    print(f"\nTotal: {len(uncovered)} uncovered out of {len(ips)} IPs")
+
+# Dispatch inject/list modes (run and exit, skip batch processing)
+if LIST_UNCOVERED:
+    do_list_uncovered()
+    sys.exit(0)
+elif INJECT:
+    do_inject()
+    sys.exit(0)
+elif INJECT_CIDR:
+    do_inject_cidr()
+    sys.exit(0)
+elif INJECT_RANGE:
+    do_inject_range()
+    sys.exit(0)
 
 
 # --- Main ---

@@ -68,6 +68,62 @@ export F2B_DIR=/your/custom/path
 ./install.sh
 ```
 
+## Batch Script Usage
+
+### Normal operation
+
+```bash
+# Automatic batch processing (used by cron via whois_cache_loop.sh)
+batch_subnet_cached.py
+
+# Dry-run — show what would happen without banning
+batch_subnet_cached.py --dry-run
+
+# Revalidate — re-lookup cached entries older than F2B_CACHE_TTL_SUCCESS
+batch_subnet_cached.py --revalidate
+```
+
+### Manual injection
+
+When RDAP/whois lookups fail (rate limiting, unreachable registries), you can manually inject subnet data from online whois tools.
+
+```bash
+# List IPs that have no subnet ban covering them
+batch_subnet_cached.py --list-uncovered
+
+# Inject a specific IP→subnet mapping (updates cache + bans)
+batch_subnet_cached.py --inject 109.125.248.113 109.125.240.0/20
+
+# Inject one or more CIDRs directly
+batch_subnet_cached.py --inject-cidr 109.125.240.0/20 193.32.176.0/24
+
+# Inject from a whois inetnum range (auto-converts to CIDRs)
+batch_subnet_cached.py --inject-range 109.125.240.0 109.125.255.255
+```
+
+All inject modes support `--dry-run`. They update the whois cache, clear any
+failed cache entries for IPs in the range, and ban the subnet(s).
+
+**Typical workflow** when the batch script reports failures:
+
+1. `batch_subnet_cached.py --list-uncovered` — see which IPs need subnets
+2. Look up the IP on an online whois tool (e.g., RIPE, ARIN, APNIC)
+3. `batch_subnet_cached.py --inject-cidr <cidr>` — inject and ban
+4. `batch_subnet_cached.py --dry-run` — verify zero uncovered IPs
+
+### Cache behavior
+
+Lookups are cached in `$F2B_DIR/whois_cache.json` with timestamps:
+
+- **Successful lookups** are used indefinitely during normal runs. They are
+  only re-checked when `--revalidate` is passed and the entry is older than
+  `F2B_CACHE_TTL_SUCCESS` (default: 30 days).
+- **Failed lookups** are automatically retried after `F2B_CACHE_TTL_FAILURE`
+  (default: 24 hours). Manual injection (`--inject*`) clears failed entries
+  for IPs covered by the injected subnet.
+- **Rate limiting** (HTTP 429) is detected and stops further lookups to that
+  RIR immediately, rather than burning through all 5 RDAP servers.
+
 ## Requirements
 
 - Rocky Linux / CentOS Stream / RHEL
