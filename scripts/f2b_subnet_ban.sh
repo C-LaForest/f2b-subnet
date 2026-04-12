@@ -9,6 +9,7 @@ IP_JAIL="dovecot"
 SUBNET_JAIL="dovecot-subnet"
 MANUAL_SUBNET=""
 F2B_DIR="${F2B_DIR:-/opt/f2b-subnet}"
+F2B_FROM="${F2B_FROM:-fail2ban@$(hostname -f)}"
 BACKUP="${F2B_DIR}/banned_subnets_dovecot.txt"
 LOG="/var/log/f2b_subnet_ban.log"
 
@@ -246,7 +247,7 @@ else
 
     # Send notification email
     {
-        echo "From: Fail2Ban <fail2ban@mail.example.com>"
+        echo "From: Fail2Ban <${F2B_FROM}>"
         echo "To: root"
         echo "Subject: [Fail2Ban] $SUBNET_JAIL: Subnet ban $SUBNET (source: ${IP:-manual})"
         echo ""
@@ -256,7 +257,7 @@ else
         else
             echo "Manually applied subnet ban."
         fi
-    } | /usr/sbin/sendmail -f fail2ban@mail.example.com root
+    } | /usr/sbin/sendmail -f ${F2B_FROM} root
 fi
 
 # Sync backup file
