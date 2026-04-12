@@ -9,7 +9,7 @@ IP_JAIL="dovecot"
 SUBNET_JAIL="dovecot-subnet"
 MANUAL_SUBNET=""
 F2B_DIR="${F2B_DIR:-/opt/f2b-subnet}"
-BACKUP="${F2B_DIR}/banned_ips_dovecot.txt"
+BACKUP="${F2B_DIR}/banned_subnets_dovecot.txt"
 LOG="/var/log/f2b_subnet_ban.log"
 
 # Parse arguments
@@ -54,30 +54,11 @@ if [[ "$DRYRUN" -eq 0 ]]; then
     if [[ -f "$DEDUP_FILE" ]]; then
         DEDUP_AGE=$(( $(date +%s) - $(stat -c %Y "$DEDUP_FILE") ))
         if [[ "$DEDUP_AGE" -lt 60 ]]; then
-            [[ -n "$IP" ]] && /usr/bin/fail2ban-client set "$IP_JAIL" unbanip "$IP" >/dev/null 2>&1
             exit 0
         fi
     fi
     touch "$DEDUP_FILE"
     find "$DEDUP_DIR" -mmin +5 -delete 2>/dev/null
-fi
-
-# Fast check: if IP is already covered by an existing SUBNET ban, just clean up and exit
-if [[ "$DRYRUN" -eq 0 && -n "$IP" ]]; then
-    COVERED=$(/usr/sbin/nft list set inet f2b-table addr-set-dovecot-subnet 2>/dev/null | grep -oP '(\d{1,3}\.){3}\d{1,3}/\d{1,2}' | LOOKUP_IP="$IP" python3 -c '
-import ipaddress, os, sys
-ip = ipaddress.IPv4Address(os.environ["LOOKUP_IP"])
-for line in sys.stdin:
-    net = ipaddress.IPv4Network(line.strip())
-    if ip in net:
-        print(net)
-        break
-' 2>/dev/null)
-    if [[ -n "$COVERED" ]]; then
-        /usr/bin/fail2ban-client set "$IP_JAIL" unbanip "$IP" >/dev/null 2>&1
-        echo "$(date): IP $IP already covered by $COVERED, unbanned from f2b" >> "$LOG"
-        exit 0
-    fi
 fi
 
 log_msg() {
@@ -220,56 +201,13 @@ for line in sys.stdin:
 ' 2>/dev/null)
 if [[ -n "$BROADER" ]]; then
     log_msg "SKIP - $SUBNET already covered by broader $BROADER (source: ${IP:-manual})"
-    # Still unban the individual IP if present
-    if [[ -n "$IP" ]]; then
-        /usr/bin/fail2ban-client set "$IP_JAIL" unbanip "$IP" >/dev/null 2>&1
-        log_msg "  Unbanned $IP from $IP_JAIL (covered by $BROADER)"
-    fi
     exit 0
 fi
 
 log_msg "Banning $SUBNET (source: ${IP:-manual})"
 
-# Unban covered entries from BOTH jails (individual IPs from dovecot, narrower subnets from dovecot-subnet)
-if [[ "$DRYRUN" -eq 1 ]]; then
-    # Dry-run: scan both jails
-    for CHECK_JAIL in "$IP_JAIL" "$SUBNET_JAIL"; do
-        UNBAN_LIST=$(LOOKUP_SUBNET="$SUBNET" LOOKUP_JAIL="$CHECK_JAIL" python3 -c '
-import ipaddress, subprocess, os
-
-subnet = ipaddress.IPv4Network(os.environ["LOOKUP_SUBNET"])
-jail = os.environ["LOOKUP_JAIL"]
-result = subprocess.run(
-    ["/usr/bin/fail2ban-client", "get", jail, "banip"],
-    capture_output=True, text=True
-)
-for token in result.stdout.split():
-    entry = token.strip()
-    if not entry:
-        continue
-    try:
-        if "/" in entry:
-            existing = ipaddress.IPv4Network(entry)
-            if existing.subnet_of(subnet) and existing != subnet:
-                print(entry)
-        else:
-            if ipaddress.IPv4Address(entry) in subnet:
-                print(entry)
-    except ValueError:
-        pass
-' 2>/dev/null)
-        if [[ -n "$UNBAN_LIST" ]]; then
-            while IFS= read -r BANNED_ENTRY; do
-                echo "[DRY-RUN] Would unban $BANNED_ENTRY from $CHECK_JAIL (covered by $SUBNET)"
-            done <<< "$UNBAN_LIST"
-        fi
-    done
-elif [[ -n "$IP" ]]; then
-    # Real-time: just unban the triggering IP from dovecot
-    /usr/bin/fail2ban-client set "$IP_JAIL" unbanip "$IP" >/dev/null 2>&1
-    log_msg "  Unbanned $IP from $IP_JAIL (covered by $SUBNET)"
-    # Also check for narrower subnets in dovecot-subnet
-    NARROW_LIST=$(LOOKUP_SUBNET="$SUBNET" python3 -c '
+# Unban narrower subnets from dovecot-subnet (individual IPs in dovecot are kept)
+NARROW_LIST=$(LOOKUP_SUBNET="$SUBNET" python3 -c '
 import ipaddress, subprocess, os
 
 subnet = ipaddress.IPv4Network(os.environ["LOOKUP_SUBNET"])
@@ -288,46 +226,15 @@ for token in result.stdout.split():
     except ValueError:
         pass
 ' 2>/dev/null)
-    if [[ -n "$NARROW_LIST" ]]; then
-        while IFS= read -r NARROW_ENTRY; do
+if [[ -n "$NARROW_LIST" ]]; then
+    while IFS= read -r NARROW_ENTRY; do
+        if [[ "$DRYRUN" -eq 1 ]]; then
+            echo "[DRY-RUN] Would unban $NARROW_ENTRY from $SUBNET_JAIL (covered by $SUBNET)"
+        else
             /usr/bin/fail2ban-client set "$SUBNET_JAIL" unbanip "$NARROW_ENTRY" >/dev/null 2>&1
             log_msg "  Unbanned $NARROW_ENTRY from $SUBNET_JAIL (covered by $SUBNET)"
-        done <<< "$NARROW_LIST"
-    fi
-else
-    # Manual: full scan of both jails
-    for CHECK_JAIL in "$IP_JAIL" "$SUBNET_JAIL"; do
-        UNBAN_LIST=$(LOOKUP_SUBNET="$SUBNET" LOOKUP_JAIL="$CHECK_JAIL" python3 -c '
-import ipaddress, subprocess, os
-
-subnet = ipaddress.IPv4Network(os.environ["LOOKUP_SUBNET"])
-jail = os.environ["LOOKUP_JAIL"]
-result = subprocess.run(
-    ["/usr/bin/fail2ban-client", "get", jail, "banip"],
-    capture_output=True, text=True
-)
-for token in result.stdout.split():
-    entry = token.strip()
-    if not entry:
-        continue
-    try:
-        if "/" in entry:
-            existing = ipaddress.IPv4Network(entry)
-            if existing.subnet_of(subnet) and existing != subnet:
-                print(entry)
-        else:
-            if ipaddress.IPv4Address(entry) in subnet:
-                print(entry)
-    except ValueError:
-        pass
-' 2>/dev/null)
-        if [[ -n "$UNBAN_LIST" ]]; then
-            while IFS= read -r BANNED_ENTRY; do
-                /usr/bin/fail2ban-client set "$CHECK_JAIL" unbanip "$BANNED_ENTRY" >/dev/null 2>&1
-                log_msg "  Unbanned $BANNED_ENTRY from $CHECK_JAIL (covered by $SUBNET)"
-            done <<< "$UNBAN_LIST"
         fi
-    done
+    done <<< "$NARROW_LIST"
 fi
 
 # Now ban the subnet in the SUBNET jail
@@ -364,16 +271,12 @@ with open("'"$BACKUP"'") as f:
     lines = f.read().splitlines()
 for line in lines:
     line = line.strip()
-    if not line:
+    if not line or "/" not in line:
         continue
     try:
-        if "/" in line:
-            existing = ipaddress.IPv4Network(line)
-            if existing.subnet_of(subnet) and existing != subnet:
-                print("  - " + line)
-        else:
-            if ipaddress.IPv4Address(line) in subnet:
-                print("  - " + line)
+        existing = ipaddress.IPv4Network(line)
+        if existing.subnet_of(subnet) and existing != subnet:
+            print("  - " + line)
     except ValueError:
         pass
 subnet_str = os.environ["LOOKUP_SUBNET"]
@@ -391,16 +294,12 @@ with open("'"$BACKUP"'") as f:
 keep = []
 for line in lines:
     line = line.strip()
-    if not line:
+    if not line or "/" not in line:
         continue
     try:
-        if "/" in line:
-            existing = ipaddress.IPv4Network(line)
-            if existing.subnet_of(subnet) and existing != subnet:
-                continue
-        else:
-            if ipaddress.IPv4Address(line) in subnet:
-                continue
+        existing = ipaddress.IPv4Network(line)
+        if existing.subnet_of(subnet) and existing != subnet:
+            continue
     except ValueError:
         pass
     keep.append(line)

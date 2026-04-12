@@ -1,0 +1,23 @@
+# Local overrides for /etc/fail2ban/action.d/nftables.conf
+# Changes from upstream:
+#   - rule_stat: added counter for packet tracking
+#   - _nft_add_set: parameterized via <addr_options> (default: simple element set)
+#     Set addr_options=" flags interval\;" on jails that need CIDR/range support
+
+[Definition]
+
+rule_stat = %(match)s <addr_family> saddr @<addr_set> counter <blocktype>
+
+_nft_add_set = <nftables> add set <table_family> <table> <addr_set> \{ type <addr_type>\;<addr_options> \}
+              <_nft_for_proto-<type>-iter>
+              <nftables> add rule <table_family> <table> <chain> %(rule_stat)s
+              <_nft_for_proto-<type>-done>
+
+[Init]
+
+# Option: addr_options
+# Notes.: additional nft set options appended after type declaration.
+#         Empty = simple element set (individual IPs only).
+#         Use ' flags interval\;' (with leading space) for CIDR/range support.
+# Values: STRING  Default: (empty)
+addr_options =

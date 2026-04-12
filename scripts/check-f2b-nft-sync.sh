@@ -44,18 +44,6 @@ print(f'{total:,}')
     else
         msg+="OK: $jail in sync (${f2b_ips} IPs & ${f2b_subnets} subnets blocked): "
     fi
-    # Check for individual IPs pending subnet escalation (dovecot only)
-    if [ "$jail" = "dovecot" ] && [ "$f2b_ips" -gt 0 ]; then
-        if [ "$f2b_ips" -ge 25 ]; then
-            msg+="CRITICAL: ${f2b_ips} IPs pending subnet escalation: "
-            status=2
-        elif [ "$f2b_ips" -ge 10 ]; then
-            msg+="WARNING: ${f2b_ips} IPs pending subnet escalation: "
-            if [ "$status" -lt 1 ]; then
-                status=1
-            fi
-        fi
-    fi
     perfdata+="${jail}_f2b=${f2b_count} ${jail}_fw=${fw_count} ${jail}_ips=${f2b_ips} ${jail}_subnets=${f2b_subnets} "
     perfdata+="${jail}_blocked_addrs=${f2b_total_ips} "
 done

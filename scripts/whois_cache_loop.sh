@@ -30,13 +30,14 @@ trap "rm -f '$LOCKFILE'" EXIT
 run_batch() {
     if [[ "$CRON" -eq 1 ]]; then
         OUTPUT=$(python3 "${F2B_DIR}/batch_subnet_cached.py" $EXTRA_ARGS 2>&1)
-        CLEANED=$(echo "$OUTPUT" | grep -c 'Cleaned up')
+        SKIPPED=$(echo "$OUTPUT" | grep -oP 'Skipped \K\d+' | head -1)
+        SKIPPED=${SKIPPED:-0}
         PROCESSED=$(echo "$OUTPUT" | grep -oP 'Processed: \K\d+')
         FAILED=$(echo "$OUTPUT" | grep -oP 'Failed: \K\d+')
         REMAINING=$(/usr/bin/fail2ban-client get dovecot banip 2>/dev/null | wc -w)
         # Only log if something happened or there are failures
-        if [[ "$PROCESSED" -gt 0 || "$CLEANED" -gt 0 || "$FAILED" -gt 0 || "$REMAINING" -gt 0 ]]; then
-            echo "$(date): whois_cache_loop.sh: cleaned=$CLEANED new_subnets=$PROCESSED failed=$FAILED pending=$REMAINING"
+        if [[ "$PROCESSED" -gt 0 || "$SKIPPED" -gt 0 || "$FAILED" -gt 0 || "$REMAINING" -gt 0 ]]; then
+            echo "$(date): whois_cache_loop.sh: skipped=$SKIPPED new_subnets=$PROCESSED failed=$FAILED pending=$REMAINING"
         fi
     elif [[ "$QUIET" -eq 1 ]]; then
         python3 "${F2B_DIR}/batch_subnet_cached.py" $EXTRA_ARGS >/dev/null 2>&1

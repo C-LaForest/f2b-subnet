@@ -1,7 +1,8 @@
 #!/bin/bash
+# Backup fail2ban bans — separate files per jail
+# Usage: backup_f2b_dovecot.sh [--force] [--dry-run]
+
 F2B_DIR="${F2B_DIR:-/opt/f2b-subnet}"
-BACKUP="${F2B_DIR}/banned_ips_dovecot.txt"
-TMPFILE="${F2B_DIR}/banned_ips_dovecot.tmp"
 FORCE=0
 DRYRUN=0
 
@@ -12,30 +13,34 @@ for arg in "$@"; do
     esac
 done
 
-# Combine both jails into one backup file
-{
-    /usr/bin/fail2ban-client status dovecot | grep -oP '(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?'
-    /usr/bin/fail2ban-client status dovecot-subnet | grep -oP '(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?'
-} | sort -u > "$TMPFILE"
+backup_jail() {
+    local jail="$1" backup="$2" label="$3"
+    local tmpfile="${backup}.tmp"
 
-NEW_COUNT=$(wc -l < "$TMPFILE")
-OLD_COUNT=0
-[[ -f "$BACKUP" ]] && OLD_COUNT=$(wc -l < "$BACKUP")
+    /usr/bin/fail2ban-client get "$jail" banip 2>/dev/null | tr ' ' '\n' | grep -v '^$' | sort -u > "$tmpfile"
 
-if [[ "$FORCE" -eq 1 ]] || [[ "$NEW_COUNT" -ge "$OLD_COUNT" ]]; then
-    if [[ "$DRYRUN" -eq 1 ]]; then
-        echo "DRY-RUN: Would write $NEW_COUNT entries (old: $OLD_COUNT)"
-        [[ "$FORCE" -eq 1 && "$NEW_COUNT" -lt "$OLD_COUNT" ]] && echo "DRY-RUN: Force flag overriding count check"
-        rm -f "$TMPFILE"
+    local new_count old_count=0
+    new_count=$(wc -l < "$tmpfile")
+    [[ -f "$backup" ]] && old_count=$(wc -l < "$backup")
+
+    if [[ "$FORCE" -eq 1 ]] || [[ "$new_count" -ge "$old_count" ]]; then
+        if [[ "$DRYRUN" -eq 1 ]]; then
+            echo "DRY-RUN [$label]: Would write $new_count entries (old: $old_count)"
+            [[ "$FORCE" -eq 1 && "$new_count" -lt "$old_count" ]] && echo "DRY-RUN [$label]: Force flag overriding count check"
+            rm -f "$tmpfile"
+        else
+            mv "$tmpfile" "$backup"
+            echo "$(date): $label backup updated - $new_count entries (was $old_count)"
+        fi
     else
-        mv "$TMPFILE" "$BACKUP"
-        echo "$(date): Backup updated - $NEW_COUNT entries (was $OLD_COUNT)"
+        if [[ "$DRYRUN" -eq 1 ]]; then
+            echo "DRY-RUN [$label]: Would NOT write - new count ($new_count) < old count ($old_count)"
+        else
+            echo "$(date): WARNING [$label] - New count ($new_count) < old count ($old_count), skipping overwrite" | tee -a /var/log/f2b_backup.log
+        fi
+        rm -f "$tmpfile"
     fi
-else
-    if [[ "$DRYRUN" -eq 1 ]]; then
-        echo "DRY-RUN: Would NOT write - new count ($NEW_COUNT) < old count ($OLD_COUNT)"
-    else
-        echo "$(date): WARNING - New count ($NEW_COUNT) < old count ($OLD_COUNT), skipping overwrite" | tee -a /var/log/f2b_backup.log
-    fi
-    rm -f "$TMPFILE"
-fi
+}
+
+backup_jail "dovecot"        "${F2B_DIR}/banned_ips_dovecot.txt"     "dovecot"
+backup_jail "dovecot-subnet" "${F2B_DIR}/banned_subnets_dovecot.txt" "dovecot-subnet"

@@ -31,6 +31,7 @@ deploy scripts/backup_f2b_dovecot.sh  "${F2B_DIR}/backup_f2b_dovecot.sh"
 deploy scripts/dedup_subnets.sh       "${F2B_DIR}/dedup_subnets.sh"
 
 # Config
+deploy config/fail2ban/nftables.local      /etc/fail2ban/action.d/nftables.local      0644
 deploy config/fail2ban/dovecot-subnet.conf /etc/fail2ban/filter.d/dovecot-subnet.conf 0644
 deploy config/logrotate/f2b-subnet         /etc/logrotate.d/f2b-subnet                0644
 deploy config/selinux/f2b-complete.te      "${SE_DIR}/f2b-complete.te"                  0644
