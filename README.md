@@ -11,12 +11,13 @@ Uses a **dual-jail** approach to eliminate nft interval set overlap errors:
 | `dovecot` | `addr-set-dovecot` | Individual IPs only | fail2ban (automatic) |
 | `dovecot-subnet` | `addr-set-dovecot-subnet` | Subnets only (CIDR) | Cron batch script |
 
+Individual IPs are kept in the `dovecot` jail permanently as defense-in-depth against an [nft interval set lookup bug](https://lore.proxmox.com/all/20250911100555.63174-2-g.goller@proxmox.com/) in the pipapo backend (kernels < 6.17). The simple element set (`addr-set-dovecot`) uses the hash backend which is not affected.
+
 A cron job runs every 10 minutes to:
 1. Read individual IPs from the `dovecot` jail
-2. Clean up IPs already covered by existing subnet bans
+2. Skip IPs already covered by existing subnet bans
 3. Look up the allocated subnet via RDAP (primary) or whois (fallback)
 4. Ban the subnet in the `dovecot-subnet` jail
-5. Remove the individual IP from the `dovecot` jail
 
 ## Files
 
@@ -37,6 +38,7 @@ A cron job runs every 10 minutes to:
 
 | File | Install to | Purpose |
 |------|-----------|---------|
+| `fail2ban/nftables.local` | `/etc/fail2ban/action.d/` | Parameterized nft set flags (`addr_options`) |
 | `fail2ban/dovecot-subnet.conf` | `/etc/fail2ban/filter.d/` | Dummy filter for subnet jail |
 | `fail2ban/jail-dovecot.conf` | Reference only | Dovecot jail config for `jail.local` |
 | `fail2ban/jail-dovecot-subnet.conf` | Reference only | Subnet jail config for `jail.local` |
@@ -51,14 +53,20 @@ A cron job runs every 10 minutes to:
 
 ## Configuration
 
-Scripts and `install.sh` use the `F2B_DIR` environment variable to locate data files and scripts. Default: `/opt/f2b-subnet`. Override before installing or running:
+### Environment Variables
+
+| Variable | Default | Used by | Description |
+|----------|---------|---------|-------------|
+| `F2B_DIR` | `/opt/f2b-subnet` | All scripts, `install.sh` | Base directory for data files and scripts |
+| `SE_DIR` | `$F2B_DIR/selinux` | `install.sh` | SELinux policy directory |
+| `F2B_CACHE_TTL_SUCCESS` | `2592000` (30 days) | `batch_subnet_cached.py` | Seconds before successful cache entries are eligible for revalidation (with `--revalidate`) |
+| `F2B_CACHE_TTL_FAILURE` | `86400` (24 hours) | `batch_subnet_cached.py` | Seconds before failed lookups are retried |
+| `F2B_LOOKUP_TIMEOUT` | `15` | `batch_subnet_cached.py` | Hard timeout (seconds) per RDAP+whois lookup |
 
 ```bash
 export F2B_DIR=/your/custom/path
 ./install.sh
 ```
-
-The SELinux policy directory defaults to `$F2B_DIR/selinux` and can be overridden separately with `SE_DIR`.
 
 ## Requirements
 
@@ -71,8 +79,14 @@ The SELinux policy directory defaults to `$F2B_DIR/selinux` and can be overridde
 ## Cron
 
 ```cron
+# Batch subnet escalation (every 10 min)
 */10 * * * * $F2B_DIR/whois_cache_loop.sh --cron >> /var/log/f2b_subnet_ban.log 2>&1
+
+# Daily backup (separate files per jail)
 10 1 * * * $F2B_DIR/backup_f2b_dovecot.sh
+
+# Weekly cache revalidation (re-check entries older than F2B_CACHE_TTL_SUCCESS)
+0 3 * * 0 python3 $F2B_DIR/batch_subnet_cached.py --revalidate >> /var/log/f2b_subnet_ban.log 2>&1
 ```
 
 ## Nagios
