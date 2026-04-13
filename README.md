@@ -128,6 +128,47 @@ Lookups are cached in `$F2B_DIR/whois_cache.json` with timestamps:
 - **Rate limiting** (HTTP 429) is detected and stops further lookups to that
   RIR immediately, rather than burning through all 5 RDAP servers.
 
+## Postfix SASL Hardening
+
+Brute-force attackers targeting SMTP port 25 with SASL AUTH attempts trigger
+Dovecot auth failures even when the IMAP port is blocked. This happens because
+Postfix delegates SASL authentication to Dovecot's auth daemon — the attacker
+never touches IMAP, but the auth failure still shows up in Dovecot's logs and
+triggers the `dovecot` fail2ban jail.
+
+**Flow:** Attacker → SMTP (port 25) → `EHLO` / `AUTH` → Postfix asks Dovecot auth → auth fails → both `dovecot` and `postfix` jails fire.
+
+**Fix:** Disable SASL on port 25 (server-to-server relay) and restrict it to
+submission (587) and smtps (465) where legitimate clients connect:
+
+```bash
+# Disable SASL globally (affects port 25)
+postconf -e 'smtpd_sasl_auth_enable=no'
+```
+
+Then in `/etc/postfix/master.cf`, override on submission/smtps services:
+
+```
+submission inet n       -       n       -       -       smtpd
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_security_level=encrypt
+
+smtps     inet n       -       n       -       -       smtpd
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_wrappermode=yes
+```
+
+Verify with `postfix check`, then `postfix reload`. Confirm port 25 no longer
+advertises AUTH:
+
+```bash
+# Port 25 — should NOT show 250-AUTH
+(sleep 1; echo EHLO test; sleep 1; echo QUIT) | openssl s_client -connect localhost:25 -starttls smtp -quiet 2>/dev/null
+
+# Port 587 — should show 250-AUTH PLAIN
+(sleep 1; echo EHLO test; sleep 1; echo QUIT) | openssl s_client -connect localhost:587 -starttls smtp -quiet 2>/dev/null
+```
+
 ## Requirements
 
 - Rocky Linux / CentOS Stream / RHEL
