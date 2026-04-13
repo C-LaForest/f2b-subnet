@@ -34,27 +34,33 @@ run_batch() {
         SKIPPED=${SKIPPED:-0}
         PROCESSED=$(echo "$OUTPUT" | grep -oP 'Processed: \K\d+')
         FAILED=$(echo "$OUTPUT" | grep -oP 'Failed: \K\d+')
-        REMAINING=$(/usr/bin/fail2ban-client get dovecot banip 2>/dev/null | wc -w)
+        TOTAL_IPS=$(/usr/bin/fail2ban-client get dovecot banip 2>/dev/null | wc -w)
+        TOTAL_SUBNETS=$(/usr/bin/fail2ban-client get dovecot-subnet banip 2>/dev/null | wc -w)
         # Only log if something happened or there are failures
-        if [[ "$PROCESSED" -gt 0 || "$SKIPPED" -gt 0 || "$FAILED" -gt 0 || "$REMAINING" -gt 0 ]]; then
-            echo "$(date): whois_cache_loop.sh: skipped=$SKIPPED new_subnets=$PROCESSED failed=$FAILED pending=$REMAINING"
+        if [[ "$PROCESSED" -gt 0 || "$SKIPPED" -gt 0 || "$FAILED" -gt 0 ]]; then
+            echo "$(date): whois_cache_loop.sh: skipped=$SKIPPED new_subnets=$PROCESSED failed=$FAILED ips=$TOTAL_IPS subnets=$TOTAL_SUBNETS"
         fi
     elif [[ "$QUIET" -eq 1 ]]; then
         python3 "${F2B_DIR}/batch_subnet_cached.py" $EXTRA_ARGS >/dev/null 2>&1
     else
         echo "=== $(date) === Starting batch run ==="
         python3 "${F2B_DIR}/batch_subnet_cached.py" $EXTRA_ARGS
-        REMAINING=$(/usr/bin/fail2ban-client get dovecot banip 2>/dev/null | wc -w)
-        echo "$(date): $REMAINING uncovered IPs remaining"
+        TOTAL_IPS=$(/usr/bin/fail2ban-client get dovecot banip 2>/dev/null | wc -w)
+        TOTAL_SUBNETS=$(/usr/bin/fail2ban-client get dovecot-subnet banip 2>/dev/null | wc -w)
+        echo "$(date): $TOTAL_IPS IPs in dovecot, $TOTAL_SUBNETS subnets in dovecot-subnet"
     fi
 }
 
 if [[ "$LOOP" -eq 1 ]]; then
     while true; do
-        run_batch
-        REMAINING=$(/usr/bin/fail2ban-client get dovecot banip 2>/dev/null | wc -w)
-        if [[ "$REMAINING" -eq 0 ]]; then
-            [[ "$QUIET" -eq 0 && "$CRON" -eq 0 ]] && echo "All done!"
+        OUTPUT=$(python3 "${F2B_DIR}/batch_subnet_cached.py" $EXTRA_ARGS 2>&1)
+        echo "$OUTPUT"
+        LOOP_PROCESSED=$(echo "$OUTPUT" | grep -oP 'Processed: \K\d+')
+        LOOP_FAILED=$(echo "$OUTPUT" | grep -oP 'Failed: \K\d+')
+        LOOP_PROCESSED=${LOOP_PROCESSED:-0}
+        LOOP_FAILED=${LOOP_FAILED:-0}
+        if [[ "$LOOP_PROCESSED" -eq 0 && "$LOOP_FAILED" -eq 0 ]]; then
+            [[ "$QUIET" -eq 0 && "$CRON" -eq 0 ]] && echo "All done — no uncovered IPs to process!"
             break
         fi
         [[ "$QUIET" -eq 0 && "$CRON" -eq 0 ]] && echo "Cooling down 5 minutes before retry..."

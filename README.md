@@ -32,6 +32,7 @@ A cron job runs every 10 minutes to:
 | `find_outOfSync.sh` | `$F2B_DIR/` | Diff f2b vs nft |
 | `backup_f2b_dovecot.sh` | `$F2B_DIR/` | Daily backup (both jails) |
 | `dedup_subnets.sh` | `$F2B_DIR/` | Remove subnets covered by broader bans |
+| `nft_miss_report.sh` | `$F2B_DIR/` | Subnet ban activity report (from logs) |
 | `check-f2b-nft-sync.sh` | `/usr/local/bin/` | Nagios monitoring check |
 
 ### Configuration (`config/`)
@@ -188,6 +189,31 @@ advertises AUTH:
 
 # Weekly cache revalidation (re-check entries older than F2B_CACHE_TTL_SUCCESS)
 0 3 * * 0 python3 $F2B_DIR/batch_subnet_cached.py --revalidate >> /var/log/f2b_subnet_ban.log 2>&1
+```
+
+### Cron log format
+
+The cron runner (`whois_cache_loop.sh --cron`) logs a one-line summary per run:
+
+```
+whois_cache_loop.sh: skipped=7442 new_subnets=5 failed=2 ips=7446 subnets=2074
+```
+
+| Field | Meaning |
+|-------|---------|
+| `skipped` | IPs already covered by existing subnet bans |
+| `new_subnets` | New subnet bans created this run |
+| `failed` | RDAP/whois lookups that failed (retried after `F2B_CACHE_TTL_FAILURE`) |
+| `ips` | Total individual IPs in the `dovecot` jail (kept permanently) |
+| `subnets` | Total subnet bans in the `dovecot-subnet` jail |
+
+### Activity report
+
+`nft_miss_report.sh` parses the cron log to summarize banning activity,
+lookup failures, and rate limiting events:
+
+```bash
+$F2B_DIR/nft_miss_report.sh [/var/log/f2b_subnet_ban.log]
 ```
 
 ## Nagios
