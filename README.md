@@ -56,9 +56,13 @@ A cron job runs every 10 minutes to:
 
 ### Environment Variables
 
+All scripts auto-detect their directory from their own filesystem location
+(`dirname "$(readlink -f "$0")"` in bash, `os.path.dirname(os.path.abspath(__file__))` in Python).
+No environment variables are needed for path configuration.
+
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
-| `F2B_DIR` | `/opt/f2b-subnet` | All scripts, `install.sh` | Base directory for data files and scripts |
+| `F2B_DIR` | Auto-detected | All scripts, `install.sh` | Override base directory (optional — scripts self-locate) |
 | `SE_DIR` | `$F2B_DIR/selinux` | `install.sh` | SELinux policy directory |
 | `F2B_CACHE_TTL_SUCCESS` | `2592000` (30 days) | `batch_subnet_cached.py` | Seconds before successful cache entries are eligible for revalidation (with `--revalidate`) |
 | `F2B_CACHE_TTL_FAILURE` | `86400` (24 hours) | `batch_subnet_cached.py` | Seconds before failed lookups are retried |
@@ -68,10 +72,67 @@ A cron job runs every 10 minutes to:
 | `F2B_REVALIDATE_DELAY_MAX` | `5` | `batch_subnet_cached.py` | Max seconds between revalidation lookups (jitter ceiling) |
 | `F2B_FROM` | `fail2ban@$(hostname -f)` | `f2b_subnet_ban.sh` | Sender address for subnet ban notification emails |
 
+**Where to set overrides:** All variables have sensible defaults and most users
+won't need to change anything. If you do need to override, set them in the
+crontab — **never in `/etc/environment`**.
+
+> **Lesson learned:** `/etc/environment` is parsed by `pam_env.so`, not the shell.
+> It only accepts bare `KEY=VALUE` lines — `export`, quotes, variable expansion,
+> and any other shell syntax will cause `pam_env.so` to return `PAM_ABORT`,
+> which silently kills **all cron jobs** system-wide with a cryptic
+> `"Critical error - immediate abort"` in `/var/log/cron`. The real error
+> (`"Missing delimiter"`) only appears in the systemd journal (`journalctl -u crond`).
+
+### Recommended: crontab environment block
+
+Set variables at the top of root's crontab (`crontab -e`). These apply to all
+cron jobs below them and are pure shell — `export`, quotes, and substitution all work.
+
 ```bash
-export F2B_DIR=/your/custom/path
-./install.sh
+# Override cache TTLs (optional — defaults are fine for most setups)
+F2B_CACHE_TTL_SUCCESS=2592000
+F2B_CACHE_TTL_FAILURE=86400
+F2B_LOOKUP_TIMEOUT=15
+F2B_FROM=fail2ban@mail.example.com
+
+# Batch subnet escalation (every 10 min)
+*/10 * * * * /root/fail2-backup/whois_cache_loop.sh --cron >> /var/log/f2b_subnet_ban.log 2>&1
+
+# Weekly cache revalidation
+0 3 * * 0 python3 /root/fail2-backup/batch_subnet_cached.py --revalidate >> /var/log/f2b_subnet_ban.log 2>&1
 ```
+
+### Alternative: inline per-command
+
+Useful when only one job needs a non-default value:
+
+```bash
+*/10 * * * * F2B_LOOKUP_TIMEOUT=30 /root/fail2-backup/whois_cache_loop.sh --cron >> /var/log/f2b_subnet_ban.log 2>&1
+```
+
+### Alternative: wrapper script
+
+For complex overrides, wrap in a shell script:
+
+```bash
+#!/bin/bash
+export F2B_CACHE_TTL_SUCCESS=604800   # 7 days
+export F2B_CACHE_TTL_FAILURE=3600     # 1 hour
+export F2B_LOOKUP_TIMEOUT=30
+export F2B_REVALIDATE_MAX=500
+exec /root/fail2-backup/whois_cache_loop.sh --cron
+```
+
+### Variable reference by context
+
+| Variable | Where to set | Notes |
+|----------|-------------|-------|
+| `F2B_DIR` | Usually unnecessary | Scripts auto-detect from their own location |
+| `F2B_CACHE_TTL_*` | Crontab or wrapper | Only needed if default TTLs don't suit your lookup volume |
+| `F2B_LOOKUP_TIMEOUT` | Crontab or wrapper | Increase if RDAP servers are slow in your region |
+| `F2B_REVALIDATE_*` | Crontab or wrapper | Tune for `--revalidate` runs only |
+| `F2B_FROM` | Crontab or wrapper | Set to match your mail server's accepted sender addresses |
+| `SE_DIR` | `install.sh` invocation only | `SE_DIR=/path install.sh` — not needed at runtime |
 
 ## Batch Script Usage
 
@@ -182,13 +243,13 @@ advertises AUTH:
 
 ```cron
 # Batch subnet escalation (every 10 min)
-*/10 * * * * $F2B_DIR/whois_cache_loop.sh --cron >> /var/log/f2b_subnet_ban.log 2>&1
+*/10 * * * * /path/to/whois_cache_loop.sh --cron >> /var/log/f2b_subnet_ban.log 2>&1
 
 # Daily backup (separate files per jail)
-10 1 * * * $F2B_DIR/backup_f2b_dovecot.sh
+10 1 * * * /path/to/backup_f2b_dovecot.sh
 
 # Weekly cache revalidation (re-check entries older than F2B_CACHE_TTL_SUCCESS)
-0 3 * * 0 python3 $F2B_DIR/batch_subnet_cached.py --revalidate >> /var/log/f2b_subnet_ban.log 2>&1
+0 3 * * 0 python3 /path/to/batch_subnet_cached.py --revalidate >> /var/log/f2b_subnet_ban.log 2>&1
 ```
 
 ### Cron log format

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Re-run batch subnet conversion
-F2B_DIR="${F2B_DIR:-/opt/f2b-subnet}"
+F2B_DIR="${F2B_DIR:-$(dirname "$(readlink -f "$0")")}"
 LOCKFILE="/tmp/whois_cache_loop.lock"
 CRON=0
 QUIET=0

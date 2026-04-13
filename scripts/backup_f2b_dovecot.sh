@@ -2,7 +2,7 @@
 # Backup fail2ban bans — separate files per jail
 # Usage: backup_f2b_dovecot.sh [--force] [--dry-run]
 
-F2B_DIR="${F2B_DIR:-/opt/f2b-subnet}"
+F2B_DIR="${F2B_DIR:-$(dirname "$(readlink -f "$0")")}"
 FORCE=0
 DRYRUN=0
 

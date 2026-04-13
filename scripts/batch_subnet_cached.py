@@ -15,9 +15,10 @@ import urllib.request
 
 JAIL = "dovecot"
 SUBNET_JAIL = "dovecot-subnet"
-F2B_DIR = os.environ.get("F2B_DIR", "/opt/f2b-subnet")
+F2B_DIR = os.environ.get("F2B_DIR", os.path.dirname(os.path.abspath(__file__)))
 CACHE_FILE = F2B_DIR + "/whois_cache.json"
 SCRIPT = "/usr/local/bin/f2b_subnet_ban.sh"
+os.environ["F2B_DIR"] = F2B_DIR  # export so child scripts inherit
 
 DRY_RUN = "--dry-run" in sys.argv
 REVALIDATE = "--revalidate" in sys.argv
