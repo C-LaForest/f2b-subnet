@@ -50,8 +50,9 @@ fi
 if [[ "$DRYRUN" -eq 0 ]]; then
     DEDUP_DIR="/tmp/f2b_subnet_dedup"
     mkdir -p "$DEDUP_DIR"
-    DEDUP_FILE="$DEDUP_DIR/${IP:-$MANUAL_SUBNET}"
-    DEDUP_FILE="${DEDUP_FILE//[\.\/]/_}"
+    DEDUP_KEY="${IP:-$MANUAL_SUBNET}"
+    DEDUP_KEY="${DEDUP_KEY//[\.\/]/_}"
+    DEDUP_FILE="$DEDUP_DIR/$DEDUP_KEY"
     if [[ -f "$DEDUP_FILE" ]]; then
         DEDUP_AGE=$(( $(date +%s) - $(stat -c %Y "$DEDUP_FILE") ))
         if [[ "$DEDUP_AGE" -lt 60 ]]; then

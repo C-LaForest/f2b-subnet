@@ -277,6 +277,57 @@ lookup failures, and rate limiting events:
 $F2B_DIR/nft_miss_report.sh [/var/log/f2b_subnet_ban.log]
 ```
 
+## nftables block action: `drop` vs `reject`
+
+By default, fail2ban's nftables action uses `blocktype = reject`, which sends an
+ICMP rejection back to the source. For hostile traffic, `drop` is preferable —
+it discards the packet silently and gives the attacker no signal that the host
+is reachable or that the port exists.
+
+To switch globally for all nftables jails, create
+`/etc/fail2ban/action.d/nftables-common.local`:
+
+```ini
+[Init]
+blocktype = drop
+```
+
+This file is auto-included via `after = nftables-common.local` in
+`nftables.conf`, so it survives package updates. A full restart is required —
+`reload` only applies new config to *new* bans, leaving existing rules unchanged:
+
+```bash
+systemctl restart fail2ban
+```
+
+Verify the switch took effect:
+
+```bash
+nft list chain inet f2b-table input
+# Each rule should end with `drop` (not `reject`)
+```
+
+> **Lesson learned:** Existing nft rules carry whatever `blocktype` was active
+> when they were created. A reload alone won't rewrite them. Restart is the
+> only way to flush + recreate. Bans persist via the fail2ban DB and are
+> restored automatically on startup.
+
+## Per-IP dedup cache
+
+`f2b_subnet_ban.sh` writes a marker file in `/tmp/f2b_subnet_dedup/` for every
+IP it processes. If the same IP arrives again within 60 seconds, the script
+exits silently — useful when fail2ban repeats `actionban` calls on jail reload
+or restore. Markers older than 5 minutes are auto-cleaned on each run.
+
+> **Lesson learned:** The original implementation built the marker path with
+> `${DEDUP_DIR}/${IP}` then ran a single substitution `${path//[\.\/]/_}`
+> intending to escape dots in the IP — but the regex also stripped the
+> directory slashes, turning `/tmp/f2b_subnet_dedup/1.2.3.4` into the
+> relative path `_tmp_f2b_subnet_dedup_1_2_3_4`. Marker files landed in
+> `$CWD` (root's home under cron) instead of the dedup dir, and the
+> auto-cleanup never found them. Sanitize the **key**, then **join** the path —
+> never sanitize after joining.
+
 ## Nagios
 
 ```
